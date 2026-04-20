@@ -14,6 +14,7 @@ import { authRouter } from '@modules/auth/auth.routes';
 import { dashboardRouter } from '@modules/dashboard/dashboard.routes';
 import { meRouter } from '@modules/me/me.routes';
 import { usersRouter } from '@modules/users/users.routes';
+import { branchesRouter } from '@modules/branches/branches.routes';
 import membersRouter from './modules/members/members.routes';
 import packagesRouter from './modules/packages/packages.routes';
 import sessionsRouter from './modules/sessions/sessions.routes';
@@ -22,6 +23,7 @@ import nonTherapyRouter from './modules/non-therapy/non-therapy.routes';
 import invoicesRouter from './modules/invoices/invoices.routes';
 import inventoryRouter from './modules/inventory/inventory.routes';
 import { adminRoutes } from './modules/admin/admin.routes';
+import auditRouter from './modules/audit/audit.routes';
 
 export function createApp(): Application {
   const app = express();
@@ -121,6 +123,9 @@ export function createApp(): Application {
   // Users module
   app.use(`${prefix}/users`, usersRouter);
 
+  // Branches module
+  app.use(`${prefix}/branches`, branchesRouter);
+
   // Members module (includes package routes)
   app.use(`${prefix}/members`, membersRouter);
 
@@ -144,6 +149,9 @@ export function createApp(): Application {
 
   // Inventory module
   app.use(`${prefix}/inventory`, inventoryRouter);
+
+  // Audit logs module
+  app.use(`${prefix}/audit-logs`, auditRouter);
 
   // Admin module
   app.use(`${prefix}/admin`, adminRoutes);

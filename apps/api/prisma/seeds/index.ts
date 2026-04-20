@@ -4,7 +4,7 @@
  * This file exports all seed functions for easy importing
  */
 
-export { seedBranches } from './branches.seed';
+export { seedBranches, assignBranchesToManager } from './branches.seed';
 export { seedUsers } from './users.seed';
 export { seedProducts, seedInventory } from './products.seed';
 export { seedPackagePricing } from './packages.seed';

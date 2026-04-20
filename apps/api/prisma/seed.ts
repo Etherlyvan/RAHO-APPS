@@ -14,6 +14,7 @@
 import { PrismaClient } from '@prisma/client';
 import {
   seedBranches,
+  assignBranchesToManager,
   seedUsers,
   seedProducts,
   seedInventory,
@@ -169,24 +170,27 @@ async function main(): Promise<void> {
       branchSurabaya.id
     );
 
-    // 3. Seed Referral Codes
+    // 3. Assign branches to Admin Manager (must be after users are created)
+    await assignBranchesToManager(prisma);
+
+    // 4. Seed Referral Codes
     await seedReferralCodes(prisma);
 
-    // 4. Seed Master Products
+    // 5. Seed Master Products
     const products = await seedProducts(prisma);
 
-    // 5. Seed Inventory for All Branches
+    // 6. Seed Inventory for All Branches
     await seedInventory(prisma, products, branchPusat.id);
     await seedInventory(prisma, products, branchBandung.id);
     await seedInventory(prisma, products, branchSurabaya.id);
 
-    // 6. Seed Package Pricing (with HHO & NO2 booster types)
+    // 7. Seed Package Pricing (with HHO & NO2 booster types)
     await seedPackagePricing(prisma, [branchPusat, branchBandung, branchSurabaya]);
 
-    // 7. Seed Inventory Items (Medical supplies for infusion)
+    // 8. Seed Inventory Items (Medical supplies for infusion)
     await seedInventoryItems(prisma);
 
-    // 8. Seed Non-Therapy Products (Air Nano & Rokok Kenkou) - SKIPPED (table not migrated yet)
+    // 9. Seed Non-Therapy Products (Air Nano & Rokok Kenkou) - SKIPPED (table not migrated yet)
     // await seedNonTherapyProducts(prisma);
 
     // ══════════════════════════════════════════════════════════

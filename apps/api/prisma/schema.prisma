@@ -29,6 +29,8 @@ enum Role {
 enum BranchType {
   KLINIK
   HOMECARE
+  PREMIERE
+  PARTNERSHIP
 }
 
 enum Gender {
@@ -168,6 +170,7 @@ model Branch {
   type           BranchType @default(KLINIK)
   operatingHours String?
   isActive       Boolean    @default(true)
+  createdBy      String?    // User ID who created this branch
   createdAt      DateTime   @default(now())
   updatedAt      DateTime   @updatedAt
 
@@ -189,6 +192,7 @@ model Branch {
 
   @@index([branchCode])
   @@index([isActive])
+  @@index([createdBy])
   @@map("branches")
 }
 

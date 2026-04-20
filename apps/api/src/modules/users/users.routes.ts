@@ -45,7 +45,7 @@ usersRouter.get(
 usersRouter.post(
   '/',
   authenticate,
-  authorize([Role.SUPER_ADMIN, Role.ADMIN_MANAGER]),
+  authorize([Role.SUPER_ADMIN, Role.ADMIN_MANAGER, Role.ADMIN_CABANG]),
   createUser,
 );
 

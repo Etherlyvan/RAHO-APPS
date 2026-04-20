@@ -222,4 +222,28 @@ export class MembersController {
       next(error);
     }
   }
+
+  // Get members by specific branch (for Admin Manager viewing branch details)
+  async getMembersByBranch(req: Request, res: Response, next: NextFunction) {
+    try {
+      const { branchId } = req.params;
+      const { search, status, page, limit } = req.query;
+
+      console.log('📊 getMembersByBranch called with branchId:', branchId);
+
+      const result = await membersService.getMembersByBranch(branchId, {
+        search: search as string,
+        status: status as string,
+        page: page ? parseInt(page as string) : undefined,
+        limit: limit ? parseInt(limit as string) : undefined,
+      });
+
+      console.log('✅ Found members:', result.members.length);
+
+      sendSuccess(res, result);
+    } catch (error) {
+      console.error('❌ Error in getMembersByBranch:', error);
+      next(error);
+    }
+  }
 }

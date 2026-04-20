@@ -88,10 +88,23 @@ export async function getUserService(userId: string) {
 
 // ── Create User ──────────────────────────────────────────────
 
-export async function createUserService(input: CreateUserInput) {
+export async function createUserService(
+  input: CreateUserInput,
+  callerRole: Role,
+  callerBranchId: string | null,
+) {
   // Check email uniqueness
   const existing = await prisma.user.findUnique({ where: { email: input.email } });
   if (existing) throw errors.conflict('USER_EMAIL_DUPLICATE', 'Email sudah digunakan.');
+
+  // If caller is ADMIN_CABANG, enforce branch assignment to their branch
+  let branchId = input.branchId ?? null;
+  if (callerRole === Role.ADMIN_CABANG) {
+    if (!callerBranchId) {
+      throw errors.badRequest('BRANCH_REQUIRED', 'Admin cabang harus memiliki branch.');
+    }
+    branchId = callerBranchId; // Force new user to same branch
+  }
 
   const hashed = await bcrypt.hash(input.password, HASH_ROUNDS);
   const staffCode = generateStaffCode(input.role);
@@ -102,7 +115,7 @@ export async function createUserService(input: CreateUserInput) {
       password: hashed,
       role: input.role,
       staffCode,
-      branchId: input.branchId ?? null,
+      branchId,
       profile: {
         create: {
           fullName: input.fullName,

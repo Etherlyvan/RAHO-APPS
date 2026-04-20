@@ -79,7 +79,15 @@ export class PackagesController {
   async getPackagePricings(req: Request, res: Response, next: NextFunction) {
     try {
       const branchId = req.user?.branchId;
+      const userRole = req.user?.role;
 
+      // ADMIN_MANAGER & SUPER_ADMIN can see all branches
+      if (userRole === 'ADMIN_MANAGER' || userRole === 'SUPER_ADMIN') {
+        const pricings = await packagesService.getAllPackagePricings();
+        return sendSuccess(res, { pricings });
+      }
+
+      // Other roles need branchId
       if (!branchId) {
         throw { status: 401, code: 'UNAUTHORIZED', message: 'Branch information missing' };
       }

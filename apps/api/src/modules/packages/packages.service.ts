@@ -781,6 +781,45 @@ export class PackagesService {
     }
   }
 
+  // Get all package pricings from all branches (for ADMIN_MANAGER monitoring)
+  async getAllPackagePricings() {
+    try {
+      const pricings = await prisma.packagePricing.findMany({
+        include: {
+          branch: {
+            select: {
+              id: true,
+              branchCode: true,
+              name: true,
+            },
+          },
+        },
+        orderBy: [
+          { branchId: 'asc' },
+          { packageType: 'asc' },
+          { totalSessions: 'asc' },
+        ],
+      });
+
+      return pricings.map(p => ({
+        id: p.id,
+        branchId: p.branchId,
+        branchCode: p.branch.branchCode,
+        branchName: p.branch.name,
+        packageType: p.packageType,
+        name: p.name,
+        totalSessions: p.totalSessions,
+        price: Number(p.price),
+        isActive: p.isActive,
+        createdAt: p.createdAt.toISOString(),
+        updatedAt: p.updatedAt.toISOString(),
+      }));
+    } catch (error) {
+      console.error('getAllPackagePricings service error:', error);
+      throw error;
+    }
+  }
+
   async createPackagePricing(data: CreatePackagePricingInput, branchId: string, userId: string) {
     // Check for duplicate
     const existing = await prisma.packagePricing.findFirst({

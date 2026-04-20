@@ -43,7 +43,7 @@ export async function getUser(req: Request, res: Response, next: NextFunction): 
 export async function createUser(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
     const input = createUserSchema.parse(req.body);
-    const user = await createUserService(input);
+    const user = await createUserService(input, req.user.role as Role, req.user.branchId);
 
     await logAudit({
       userId: req.user.userId,

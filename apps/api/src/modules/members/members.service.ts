@@ -138,6 +138,129 @@ export class MembersService {
     };
   }
 
+  // New method: Get members by specific branch (for Admin Manager viewing branch details)
+  async getMembersByBranch(targetBranchId: string, filters: MemberFilters) {
+    const { search, status, page = 1, limit = 100 } = filters;
+    const skip = (page - 1) * limit;
+
+    console.log('🔍 getMembersByBranch service called');
+    console.log('  targetBranchId:', targetBranchId);
+    console.log('  filters:', filters);
+
+    // Build where clause - only members registered at this specific branch
+    const where: any = {
+      registrationBranchId: targetBranchId,
+    };
+
+    // Search filter
+    if (search) {
+      where.AND = [
+        {
+          OR: [
+            { memberNo: { contains: search, mode: 'insensitive' } },
+            { user: { profile: { fullName: { contains: search, mode: 'insensitive' } } } },
+            { user: { profile: { phone: { contains: search } } } },
+          ],
+        },
+      ];
+    }
+
+    // Status filter
+    if (status === 'active') {
+      where.isActive = true;
+    } else if (status === 'inactive') {
+      where.isActive = false;
+    }
+
+    console.log('  where clause:', JSON.stringify(where, null, 2));
+
+    const [members, total] = await Promise.all([
+      prisma.member.findMany({
+        where,
+        skip,
+        take: limit,
+        include: {
+          user: {
+            include: {
+              profile: true,
+            },
+          },
+          registrationBranch: true,
+          branchAccesses: {
+            include: {
+              branch: true,
+            },
+          },
+          memberPackages: {
+            where: {
+              packageType: 'BASIC',
+              status: 'ACTIVE',
+            },
+            select: {
+              totalSessions: true,
+              usedSessions: true,
+            },
+          },
+          documents: {
+            where: {
+              documentType: 'FOTO_PROFIL',
+            },
+            select: {
+              fileUrl: true,
+            },
+            take: 1,
+          },
+        },
+        orderBy: { createdAt: 'desc' },
+      }),
+      prisma.member.count({ where }),
+    ]);
+
+    console.log('  ✅ Found members:', members.length);
+    console.log('  ✅ Total count:', total);
+
+    // Map to response format
+    const mappedMembers = members.map((member) => {
+      // Check if member has access to other branches
+      const isLintas = member.branchAccesses.length > 0;
+
+      // Calculate basic voucher count from included packages
+      const basicVoucherCount = member.memberPackages.reduce(
+        (sum: number, pkg: { totalSessions: number; usedSessions: number }) => 
+          sum + (pkg.totalSessions - pkg.usedSessions),
+        0
+      );
+
+      // Get profile photo from included documents
+      const profilePhoto = member.documents[0];
+
+      return {
+        memberId: member.id,
+        memberNo: member.memberNo,
+        fullName: member.user.profile?.fullName || '',
+        phone: member.user.profile?.phone || '',
+        email: member.user.email,
+        voucherCount: member.voucherCount,
+        basicPackageCount: basicVoucherCount,
+        isActive: member.isActive,
+        isLintas,
+        registrationBranch: member.registrationBranch.name,
+        photoUrl: profilePhoto?.fileUrl,
+        createdAt: member.createdAt,
+      };
+    });
+
+    return {
+      members: mappedMembers,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
+    };
+  }
+
   async lookupMember(memberNo: string, branchId: string | null, role: Role) {
     const member = await prisma.member.findUnique({
       where: { memberNo },
