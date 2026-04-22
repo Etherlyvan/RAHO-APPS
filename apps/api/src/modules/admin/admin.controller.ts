@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { AdminService } from './admin.service';
 import { sendSuccess } from '@utils/response';
+import { Role, PackageType, AuditAction } from '@prisma/client';
 
 const adminService = new AdminService();
 
@@ -51,12 +52,12 @@ export async function getAuditLogs(req: Request, res: Response, next: NextFuncti
     const filters = {
       page: req.query.page ? parseInt(req.query.page as string) : undefined,
       limit: req.query.limit ? parseInt(req.query.limit as string) : undefined,
-      search: req.query.search as string,
-      action: req.query.action as string,
-      resource: req.query.resource as string,
-      userId: req.query.userId as string,
-      startDate: req.query.startDate as string,
-      endDate: req.query.endDate as string,
+      search: req.query.search as string | undefined,
+      action: req.query.action ? (req.query.action as AuditAction) : undefined,
+      resource: req.query.resource as string | undefined,
+      userId: req.query.userId as string | undefined,
+      startDate: req.query.startDate as string | undefined,
+      endDate: req.query.endDate as string | undefined,
     };
 
     const result = await adminService.getAuditLogs(filters);
@@ -74,10 +75,10 @@ export async function getAuditLogs(req: Request, res: Response, next: NextFuncti
 export async function getAllPackagePricing(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
     const filters = {
-      branchId: req.query.branchId as string,
-      packageType: req.query.packageType as string,
+      branchId: req.query.branchId as string | undefined,
+      packageType: req.query.packageType ? (req.query.packageType as PackageType) : undefined,
       isActive: req.query.isActive === 'true' ? true : req.query.isActive === 'false' ? false : undefined,
-      search: req.query.search as string,
+      search: req.query.search as string | undefined,
       page: req.query.page ? parseInt(req.query.page as string) : undefined,
       limit: req.query.limit ? parseInt(req.query.limit as string) : undefined,
     };
@@ -150,10 +151,10 @@ export async function createAdminManager(req: Request, res: Response, next: Next
 export async function getAllUsers(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
     const filters = {
-      role: req.query.role as string,
-      branchId: req.query.branchId as string,
+      role: req.query.role ? (req.query.role as Role) : undefined,
+      branchId: req.query.branchId as string | undefined,
       isActive: req.query.isActive === 'true' ? true : req.query.isActive === 'false' ? false : undefined,
-      search: req.query.search as string,
+      search: req.query.search as string | undefined,
       page: req.query.page ? parseInt(req.query.page as string) : undefined,
       limit: req.query.limit ? parseInt(req.query.limit as string) : undefined,
     };

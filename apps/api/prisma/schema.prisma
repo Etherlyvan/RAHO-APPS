@@ -414,6 +414,13 @@ model MemberPackage {
   serviceType      String?       // HC, PS, PHC, PTY, PDA
   purchaseGroupId  String?       // Group BASIC + BOOSTER purchased together
   upgradedFromId   String?       // Track if this is an upgrade from another package
+  
+  // Payment proof (bukti pembayaran)
+  paymentProofUrl     String?
+  paymentProofFileName String?
+  paymentProofFileSize Int?
+  paymentProofMimeType String?
+  
   assignedBy       String
   verifiedBy       String?
   paidAt           DateTime?
@@ -439,6 +446,7 @@ model MemberPackage {
   @@index([packageCode])
   @@index([memberId, packageType, status])
   @@index([purchaseGroupId])
+  @@index([paymentProofUrl])
   @@map("member_packages")
 }
 
@@ -454,6 +462,13 @@ model MemberAddOn {
   totalPrice  Decimal       @db.Decimal(12, 2)
   status      PackageStatus @default(PENDING_PAYMENT)
   notes       String?
+  
+  // Payment proof (bukti pembayaran)
+  paymentProofUrl     String?
+  paymentProofFileName String?
+  paymentProofFileSize Int?
+  paymentProofMimeType String?
+  
   assignedBy  String
   verifiedBy  String?
   paidAt      DateTime?
@@ -470,6 +485,7 @@ model MemberAddOn {
   @@index([memberId, status])
   @@index([branchId, status])
   @@index([addOnCode])
+  @@index([paymentProofUrl])
   @@map("member_add_ons")
 }
 
@@ -515,6 +531,13 @@ model MemberNonTherapyPurchase {
   totalPrice   Decimal       @db.Decimal(12, 2)
   status       PackageStatus @default(PENDING_PAYMENT)
   notes        String?
+  
+  // Payment proof (bukti pembayaran)
+  paymentProofUrl     String?
+  paymentProofFileName String?
+  paymentProofFileSize Int?
+  paymentProofMimeType String?
+  
   assignedBy   String
   verifiedBy   String?
   paidAt       DateTime?
@@ -531,6 +554,7 @@ model MemberNonTherapyPurchase {
   @@index([memberId, status])
   @@index([branchId, status])
   @@index([purchaseCode])
+  @@index([paymentProofUrl])
   @@map("member_non_therapy_purchases")
 }
 
@@ -615,6 +639,13 @@ model InvoicePayment {
   paymentMethod    PaymentMethod
   paymentReference String?
   notes            String?
+  
+  // Payment proof (bukti pembayaran)
+  proofFileUrl     String?
+  proofFileName    String?
+  proofFileSize    Int?
+  proofMimeType    String?
+  
   receivedBy       String
   receivedAt       DateTime      @default(now())
   createdAt        DateTime      @default(now())
@@ -624,6 +655,7 @@ model InvoicePayment {
 
   @@index([invoiceId])
   @@index([receivedAt])
+  @@index([proofFileUrl])
   @@map("invoice_payments")
 }
 

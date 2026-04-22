@@ -92,7 +92,12 @@ export class MembersController {
         photo: filesObj?.['photo']?.[0],
       };
 
-      const result = await membersService.createMember(validated, files, branchId, userId);
+      const result = await membersService.createMember(
+        validated as any, // Type assertion since schema validation ensures correct types
+        files, 
+        branchId, 
+        userId
+      );
 
       sendSuccess(res, result, 201);
     } catch (error) {
