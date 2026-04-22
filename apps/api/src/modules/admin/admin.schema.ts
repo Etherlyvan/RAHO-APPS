@@ -76,7 +76,27 @@ export const createUserSchema = z.object({
     .min(10, 'Nomor telepon minimal 10 digit')
     .max(15, 'Nomor telepon maksimal 15 digit')
     .regex(/^[0-9+\-\s()]+$/, 'Format nomor telepon tidak valid')
-    .optional()
+    .optional(),
+  branchIds: z.array(z.string().uuid('ID cabang tidak valid')).optional()
+});
+
+export const createAdminManagerSchema = z.object({
+  email: z.string()
+    .email('Format email tidak valid')
+    .max(100, 'Email maksimal 100 karakter'),
+  password: z.string()
+    .min(8, 'Password minimal 8 karakter')
+    .max(50, 'Password maksimal 50 karakter')
+    .regex(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)/, 'Password harus mengandung huruf kecil, huruf besar, dan angka'),
+  fullName: z.string()
+    .min(2, 'Nama lengkap minimal 2 karakter')
+    .max(100, 'Nama lengkap maksimal 100 karakter'),
+  phone: z.string()
+    .min(10, 'Nomor telepon minimal 10 digit')
+    .max(15, 'Nomor telepon maksimal 15 digit')
+    .regex(/^[0-9+\-\s()]+$/, 'Format nomor telepon tidak valid'),
+  branchIds: z.array(z.string().uuid('ID cabang tidak valid'))
+    .min(1, 'Minimal 1 cabang harus dipilih')
 });
 
 // ============================================================
@@ -108,10 +128,34 @@ export const createStockRequestSchema = z.object({
 // PACKAGE PRICING SCHEMAS
 // ============================================================
 
+export const createPackagePricingSchema = z.object({
+  branchId: z.string()
+    .uuid('ID cabang tidak valid'),
+  packageType: z.nativeEnum(PackageType),
+  productCode: z.string()
+    .min(2, 'Kode produk minimal 2 karakter')
+    .max(50, 'Kode produk maksimal 50 karakter')
+    .optional(),
+  name: z.string()
+    .min(3, 'Nama paket minimal 3 karakter')
+    .max(100, 'Nama paket maksimal 100 karakter'),
+  totalSessions: z.number()
+    .int('Total sesi harus berupa bilangan bulat')
+    .min(1, 'Total sesi minimal 1')
+    .max(100, 'Total sesi maksimal 100'),
+  price: z.number()
+    .min(0, 'Harga tidak boleh negatif')
+    .max(100000000, 'Harga maksimal 100 juta')
+});
+
 export const updatePackagePricingSchema = z.object({
   name: z.string()
     .min(3, 'Nama paket minimal 3 karakter')
     .max(100, 'Nama paket maksimal 100 karakter')
+    .optional(),
+  productCode: z.string()
+    .min(2, 'Kode produk minimal 2 karakter')
+    .max(50, 'Kode produk maksimal 50 karakter')
     .optional(),
   price: z.number()
     .min(0, 'Harga tidak boleh negatif')
@@ -133,6 +177,44 @@ export const periodQuerySchema = z.object({
     .default('30')
 });
 
+export const userFilterSchema = z.object({
+  role: z.nativeEnum(Role).optional(),
+  branchId: z.string().uuid('ID cabang tidak valid').optional(),
+  isActive: z.string()
+    .transform(val => val === 'true')
+    .optional(),
+  search: z.string().optional(),
+  page: z.string()
+    .regex(/^\d+$/, 'Page harus berupa angka')
+    .transform(val => parseInt(val))
+    .optional()
+    .default('1'),
+  limit: z.string()
+    .regex(/^\d+$/, 'Limit harus berupa angka')
+    .transform(val => parseInt(val))
+    .optional()
+    .default('20')
+});
+
+export const packagePricingFilterSchema = z.object({
+  branchId: z.string().uuid('ID cabang tidak valid').optional(),
+  packageType: z.nativeEnum(PackageType).optional(),
+  isActive: z.string()
+    .transform(val => val === 'true')
+    .optional(),
+  search: z.string().optional(),
+  page: z.string()
+    .regex(/^\d+$/, 'Page harus berupa angka')
+    .transform(val => parseInt(val))
+    .optional()
+    .default('1'),
+  limit: z.string()
+    .regex(/^\d+$/, 'Limit harus berupa angka')
+    .transform(val => parseInt(val))
+    .optional()
+    .default('20')
+});
+
 // ============================================================
 // TYPE EXPORTS
 // ============================================================
@@ -140,7 +222,11 @@ export const periodQuerySchema = z.object({
 export type CreateBranchInput = z.infer<typeof createBranchSchema>;
 export type UpdateBranchInput = z.infer<typeof updateBranchSchema>;
 export type CreateUserInput = z.infer<typeof createUserSchema>;
+export type CreateAdminManagerInput = z.infer<typeof createAdminManagerSchema>;
 export type CreateStockRequestInput = z.infer<typeof createStockRequestSchema>;
 export type StockRequestItemInput = z.infer<typeof stockRequestItemSchema>;
+export type CreatePackagePricingInput = z.infer<typeof createPackagePricingSchema>;
 export type UpdatePackagePricingInput = z.infer<typeof updatePackagePricingSchema>;
 export type PeriodQueryInput = z.infer<typeof periodQuerySchema>;
+export type UserFilterInput = z.infer<typeof userFilterSchema>;
+export type PackagePricingFilterInput = z.infer<typeof packagePricingFilterSchema>;

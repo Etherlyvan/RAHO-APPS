@@ -1,788 +1,859 @@
-import { prisma } from '../../lib/prisma';
-import { logAudit } from '../../utils/auditLog';
-import { AuditAction, Role, BranchType } from '@prisma/client';
-import bcrypt from 'bcryptjs';
+import { prisma } from '@lib/prisma';
+import { errors } from '@middleware/errorHandler';
 
 export class AdminService {
-  // ============================================================
-  // ADMIN CABANG - KPI & DASHBOARD
-  // ============================================================
-
-  async getBranchKPI(branchId: string) {
-    const today = new Date();
-    const startOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate());
-    const startOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
-
-    // Member aktif di cabang
-    const activeMembersCount = await prisma.member.count({
-      where: {
-        registrationBranchId: branchId,
-        memberPackages: {
-          some: {
-            status: 'ACTIVE',
-            branchId: branchId
-          }
-        }
-      }
-    });
-
-    // Sesi hari ini
-    const todaySessionsCount = await prisma.treatmentSession.count({
-      where: {
-        branchId: branchId,
-        treatmentDate: {
-          gte: startOfDay
-        }
-      }
-    });
-
-    // Sesi bulan ini
-    const monthlySessionsCount = await prisma.treatmentSession.count({
-      where: {
-        branchId: branchId,
-        treatmentDate: {
-          gte: startOfMonth
-        }
-      }
-    });
-
-    // Stok kritis
-    const criticalStockCount = await prisma.inventoryItem.count({
-      where: {
-        branchId: branchId,
-        stock: {
-          lt: prisma.inventoryItem.fields.minThreshold
-        }
-      }
-    });
-
-    // Paket pending verifikasi
-    const pendingPackagesCount = await prisma.memberPackage.count({
-      where: {
-        branchId: branchId,
-        status: 'PENDING_PAYMENT'
-      }
-    });
-
-    // Revenue bulan ini (dari paket yang sudah dibayar)
-    const monthlyRevenue = await prisma.memberPackage.aggregate({
-      where: {
-        branchId: branchId,
-        status: 'ACTIVE',
-        paidAt: {
-          gte: startOfMonth
-        }
-      },
-      _sum: {
-        finalPrice: true
-      }
-    });
-
-    return {
-      activeMembers: activeMembersCount,
-      todaySessions: todaySessionsCount,
-      monthlySessions: monthlySessionsCount,
-      criticalStock: criticalStockCount,
-      pendingPackages: pendingPackagesCount,
-      monthlyRevenue: Number(monthlyRevenue._sum.finalPrice) || 0
-    };
-  }
-
-  async getBranchStockStatus(branchId: string) {
-    const stockItems = await prisma.inventoryItem.findMany({
-      where: { branchId },
-      include: {
-        masterProduct: {
-          select: {
-            name: true,
-            category: true,
-            unit: true
-          }
-        }
-      },
-      orderBy: [
-        { stock: 'asc' }, // Stok terendah dulu
-        { masterProduct: { name: 'asc' } }
-      ]
-    });
-
-    return stockItems.map(item => ({
-      id: item.id,
-      productName: item.masterProduct.name,
-      category: item.masterProduct.category,
-      currentStock: Number(item.stock),
-      minThreshold: Number(item.minThreshold),
-      unit: item.masterProduct.unit,
-      status: Number(item.stock) === 0 ? 'OUT_OF_STOCK' : 
-              Number(item.stock) < Number(item.minThreshold) ? 'LOW_STOCK' : 'OK',
-      isLowStock: Number(item.stock) < Number(item.minThreshold),
-      isOutOfStock: Number(item.stock) === 0
-    }));
-  }
-
-  async getPendingPackages(branchId: string) {
-    const pendingPackages = await prisma.memberPackage.findMany({
-      where: {
-        branchId: branchId,
-        status: 'PENDING_PAYMENT'
-      },
-      include: {
-        member: {
-          select: {
-            memberNo: true,
-            userId: true
-          }
-        },
-        assignedByUser: {
-          include: {
-            profile: {
-              select: {
-                fullName: true
-              }
-            }
-          }
-        }
-      },
-      orderBy: { createdAt: 'desc' },
-      take: 20 // Limit untuk performa
-    });
-
-    // Get member names
-    const memberUserIds = pendingPackages.map(pkg => pkg.member.userId);
-    const memberProfiles = await prisma.userProfile.findMany({
-      where: {
-        userId: { in: memberUserIds }
-      },
-      select: {
-        userId: true,
-        fullName: true
-      }
-    });
-
-    const profileMap = new Map(memberProfiles.map(p => [p.userId, p.fullName]));
-
-    return pendingPackages.map(pkg => ({
-      id: pkg.id,
-      packageCode: pkg.packageCode,
-      packageType: pkg.packageType,
-      totalSessions: pkg.totalSessions,
-      finalPrice: Number(pkg.finalPrice),
-      memberNo: pkg.member.memberNo,
-      memberName: profileMap.get(pkg.member.userId) || 'Unknown',
-      assignedBy: pkg.assignedByUser.profile?.fullName || 'Unknown',
-      createdAt: pkg.createdAt
-    }));
-  }
-
-  // ============================================================
-  // ADMIN CABANG - USER MANAGEMENT
-  // ============================================================
-
-  async createBranchUser(userData: any, branchId: string, createdBy: string) {
-    // Validasi role yang diizinkan untuk Admin Cabang
-    const allowedRoles = [Role.ADMIN_LAYANAN, Role.DOCTOR, Role.NURSE];
-    if (!allowedRoles.includes(userData.role)) {
-      throw {
-        status: 403,
-        code: 'INVALID_ROLE',
-        message: 'Admin Cabang hanya bisa membuat user dengan role ADMIN_LAYANAN, DOCTOR, atau NURSE'
-      };
-    }
-
-    // Check email uniqueness
-    const existingUser = await prisma.user.findUnique({
-      where: { email: userData.email }
-    });
-
-    if (existingUser) {
-      throw {
-        status: 409,
-        code: 'EMAIL_EXISTS',
-        message: 'Email sudah terdaftar'
-      };
-    }
-
-    // Generate staff code
-    const staffCode = await this.generateStaffCode(userData.role);
-    const hashedPassword = await bcrypt.hash(userData.password, 12);
-
-    const result = await prisma.$transaction(async (tx) => {
-      // Create user
-      const user = await tx.user.create({
-        data: {
-          email: userData.email,
-          password: hashedPassword,
-          role: userData.role,
-          branchId: branchId,
-          staffCode: staffCode,
-          isActive: true
-        }
-      });
-
-      // Create profile
-      await tx.userProfile.create({
-        data: {
-          userId: user.id,
-          fullName: userData.fullName,
-          phone: userData.phone || null
-        }
-      });
-
-      return user;
-    });
-
-    await logAudit({
-      userId: createdBy,
-      action: AuditAction.CREATE,
-      resource: 'User',
-      resourceId: result.id,
-      meta: {
-        role: userData.role,
-        branchId: branchId,
-        email: userData.email
-      }
-    });
-
-    return result;
-  }
-
-  async getBranchUsers(branchId: string) {
-    const users = await prisma.user.findMany({
-      where: {
-        branchId: branchId,
-        role: {
-          in: [Role.ADMIN_LAYANAN, Role.DOCTOR, Role.NURSE, Role.ADMIN_CABANG]
-        }
-      },
-      include: {
-        profile: {
-          select: {
-            fullName: true,
-            phone: true
-          }
-        }
-      },
-      orderBy: [
-        { role: 'asc' },
-        { profile: { fullName: 'asc' } }
-      ]
-    });
-
-    return users.map(user => ({
-      id: user.id,
-      email: user.email,
-      role: user.role,
-      staffCode: user.staffCode,
-      isActive: user.isActive,
-      fullName: user.profile?.fullName || 'Unknown',
-      phone: user.profile?.phone,
-      createdAt: user.createdAt
-    }));
-  }
-
-  async deactivateUser(userId: string, branchId: string, deactivatedBy: string) {
-    // Verify user belongs to this branch
-    const user = await prisma.user.findFirst({
-      where: {
-        id: userId,
-        branchId: branchId
-      }
-    });
-
-    if (!user) {
-      throw {
-        status: 404,
-        code: 'USER_NOT_FOUND',
-        message: 'User tidak ditemukan di cabang ini'
-      };
-    }
-
-    // Cannot deactivate ADMIN_CABANG or higher roles
-    if ([Role.ADMIN_CABANG, Role.ADMIN_MANAGER, Role.SUPER_ADMIN].includes(user.role)) {
-      throw {
-        status: 403,
-        code: 'CANNOT_DEACTIVATE',
-        message: 'Tidak dapat menonaktifkan user dengan role ini'
-      };
-    }
-
-    await prisma.user.update({
-      where: { id: userId },
-      data: { isActive: false }
-    });
-
-    await logAudit({
-      userId: deactivatedBy,
-      action: AuditAction.UPDATE,
-      resource: 'User',
-      resourceId: userId,
-      meta: {
-        action: 'DEACTIVATE',
-        previousStatus: user.isActive
-      }
-    });
-  }
-
-  // ============================================================
-  // ADMIN CABANG - STOCK REQUEST
-  // ============================================================
-
-  async createStockRequest(requestData: any, branchId: string, requestedBy: string) {
-    // Generate request code
-    const branch = await prisma.branch.findUnique({
-      where: { id: branchId },
-      select: { branchCode: true }
-    });
-
-    if (!branch) {
-      throw {
-        status: 404,
-        code: 'BRANCH_NOT_FOUND',
-        message: 'Cabang tidak ditemukan'
-      };
-    }
-
-    const requestCode = await this.generateStockRequestCode(branch.branchCode);
-
-    const stockRequest = await prisma.stockRequest.create({
-      data: {
-        requestCode: requestCode,
-        branchId: branchId,
-        requestedBy: requestedBy,
-        status: 'PENDING',
-        notes: requestData.notes,
-        items: {
-          create: requestData.items.map((item: any) => ({
-            masterProductId: item.masterProductId,
-            requestedQuantity: item.quantity,
-            notes: item.notes
-          }))
-        }
-      },
-      include: {
-        items: {
-          include: {
-            masterProduct: {
-              select: {
-                name: true,
-                unit: true
-              }
-            }
-          }
-        }
-      }
-    });
-
-    await logAudit({
-      userId: requestedBy,
-      action: AuditAction.CREATE,
-      resource: 'StockRequest',
-      resourceId: stockRequest.id,
-      meta: {
-        requestCode: requestCode,
-        itemsCount: requestData.items.length
-      }
-    });
-
-    return stockRequest;
-  }
-
-  async getBranchStockRequests(branchId: string) {
-    const requests = await prisma.stockRequest.findMany({
-      where: { branchId },
-      include: {
-        items: {
-          include: {
-            masterProduct: {
-              select: {
-                name: true,
-                unit: true
-              }
-            }
-          }
-        },
-        requestedByUser: {
-          include: {
-            profile: {
-              select: {
-                fullName: true
-              }
-            }
-          }
-        }
-      },
-      orderBy: { createdAt: 'desc' }
-    });
-
-    return requests.map(request => ({
-      id: request.id,
-      requestCode: request.requestCode,
-      status: request.status,
-      notes: request.notes,
-      requestedBy: request.requestedByUser.profile?.fullName || 'Unknown',
-      createdAt: request.createdAt,
-      items: request.items.map(item => ({
-        productName: item.masterProduct.name,
-        requestedQuantity: item.requestedQuantity,
-        unit: item.masterProduct.unit,
-        notes: item.notes
-      }))
-    }));
-  }
-
-  // ============================================================
-  // ADMIN MANAGER - MULTI-BRANCH KPI
-  // ============================================================
-
-  async getMultiBranchKPI() {
-    const today = new Date();
-    const startOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
-
-    // Total branches
-    const totalBranches = await prisma.branch.count({
-      where: { isActive: true }
-    });
-
-    // Total active members across all branches
-    const totalActiveMembers = await prisma.member.count({
-      where: {
-        memberPackages: {
-          some: {
-            status: 'ACTIVE'
-          }
-        }
-      }
-    });
-
-    // Total sessions this month
-    const monthlySessionsCount = await prisma.treatmentSession.count({
-      where: {
-        treatmentDate: {
-          gte: startOfMonth
-        }
-      }
-    });
-
-    // Total revenue this month
-    const monthlyRevenue = await prisma.memberPackage.aggregate({
-      where: {
-        status: 'ACTIVE',
-        paidAt: {
-          gte: startOfMonth
-        }
-      },
-      _sum: {
-        finalPrice: true
-      }
-    });
-
-    // Active packages by type
-    const packagesByType = await prisma.memberPackage.groupBy({
-      by: ['packageType'],
-      where: {
-        status: 'ACTIVE'
-      },
-      _count: {
-        id: true
-      }
-    });
-
-    // Critical stock across all branches
-    const criticalStockCount = await prisma.inventoryItem.count({
-      where: {
-        stock: {
-          lt: prisma.inventoryItem.fields.minThreshold
-        }
-      }
-    });
-
-    return {
-      totalBranches,
-      totalActiveMembers,
-      monthlySessionsCount,
-      monthlyRevenue: Number(monthlyRevenue._sum.finalPrice) || 0,
-      packagesByType: packagesByType.reduce((acc, item) => {
-        acc[item.packageType] = item._count.id;
-        return acc;
-      }, {} as Record<string, number>),
-      criticalStockCount
-    };
-  }
-
-  async getSessionsPerBranch(days: number = 30) {
-    const startDate = new Date();
-    startDate.setDate(startDate.getDate() - days);
-
-    const sessionsPerBranch = await prisma.treatmentSession.groupBy({
-      by: ['branchId'],
-      where: {
-        treatmentDate: {
-          gte: startDate
-        }
-      },
-      _count: {
-        id: true
-      }
-    });
-
-    // Get branch names
-    const branchIds = sessionsPerBranch.map(item => item.branchId);
-    const branches = await prisma.branch.findMany({
-      where: {
-        id: { in: branchIds }
-      },
-      select: {
-        id: true,
-        name: true,
-        branchCode: true
-      }
-    });
-
-    const branchMap = new Map(branches.map(b => [b.id, b]));
-
-    return sessionsPerBranch.map(item => ({
-      branchId: item.branchId,
-      branchName: branchMap.get(item.branchId)?.name || 'Unknown',
-      branchCode: branchMap.get(item.branchId)?.branchCode || 'UNK',
-      sessionCount: item._count.id
-    }));
-  }
-
-  // ============================================================
-  // ADMIN MANAGER - BRANCH MANAGEMENT
-  // ============================================================
-
-  async createBranch(branchData: any, createdBy: string) {
-    // Check branch code uniqueness
-    const existingBranch = await prisma.branch.findUnique({
-      where: { branchCode: branchData.branchCode }
-    });
-
-    if (existingBranch) {
-      throw {
-        status: 409,
-        code: 'BRANCH_CODE_EXISTS',
-        message: 'Kode cabang sudah digunakan'
-      };
-    }
-
-    const branch = await prisma.branch.create({
-      data: {
-        branchCode: branchData.branchCode,
-        name: branchData.name,
-        address: branchData.address,
-        city: branchData.city,
-        phone: branchData.phone,
-        type: branchData.type || BranchType.KLINIK,
-        operatingHours: branchData.operatingHours,
-        isActive: true
-      }
-    });
-
-    await logAudit({
-      userId: createdBy,
-      action: AuditAction.CREATE,
-      resource: 'Branch',
-      resourceId: branch.id,
-      meta: {
-        branchCode: branchData.branchCode,
-        name: branchData.name
-      }
-    });
-
-    return branch;
-  }
-
-  async getAllBranches() {
-    const branches = await prisma.branch.findMany({
-      include: {
-        _count: {
-          select: {
-            users: {
-              where: { isActive: true }
+  // ── Get System Statistics ─────────────────────────────────
+  async getSystemStats() {
+    try {
+      // Parallel queries for better performance
+      const [
+        totalBranches,
+        activeBranches,
+        totalUsers,
+        activeUsers,
+        totalMembers,
+        activeMembers,
+        totalPackages,
+        activePackages,
+        totalSessions,
+        completedSessions,
+        totalRevenue,
+        monthlyRevenue,
+      ] = await Promise.all([
+        // Branches
+        prisma.branch.count(),
+        prisma.branch.count({ where: { isActive: true } }),
+        
+        // Users (staff only, not members)
+        prisma.user.count({ where: { role: { not: 'MEMBER' } } }),
+        prisma.user.count({ where: { role: { not: 'MEMBER' }, isActive: true } }),
+        
+        // Members
+        prisma.member.count(),
+        prisma.member.count({ where: { isActive: true } }),
+        
+        // Packages
+        prisma.memberPackage.count(),
+        prisma.memberPackage.count({ where: { status: 'ACTIVE' } }),
+        
+        // Sessions
+        prisma.treatmentSession.count(),
+        prisma.treatmentSession.count({ where: { isCompleted: true } }),
+        
+        // Revenue - Total
+        prisma.invoice.aggregate({
+          where: { status: 'PAID' },
+          _sum: { totalAmount: true },
+        }),
+        
+        // Revenue - This month
+        prisma.invoice.aggregate({
+          where: {
+            status: 'PAID',
+            paidAt: {
+              gte: new Date(new Date().getFullYear(), new Date().getMonth(), 1),
             },
-            members: true,
-            memberPackages: {
-              where: { status: 'ACTIVE' }
-            }
-          }
-        }
-      },
-      orderBy: { name: 'asc' }
-    });
+          },
+          _sum: { totalAmount: true },
+        }),
+      ]);
 
-    return branches.map(branch => ({
-      id: branch.id,
-      branchCode: branch.branchCode,
-      name: branch.name,
-      address: branch.address,
-      city: branch.city,
-      phone: branch.phone,
-      type: branch.type,
-      operatingHours: branch.operatingHours,
-      isActive: branch.isActive,
-      stats: {
-        activeUsers: branch._count.users,
-        totalMembers: branch._count.members,
-        activePackages: branch._count.memberPackages
-      },
-      createdAt: branch.createdAt
-    }));
-  }
-
-  async updateBranch(branchId: string, updateData: any, updatedBy: string) {
-    const branch = await prisma.branch.findUnique({
-      where: { id: branchId }
-    });
-
-    if (!branch) {
-      throw {
-        status: 404,
-        code: 'BRANCH_NOT_FOUND',
-        message: 'Cabang tidak ditemukan'
+      return {
+        totalBranches,
+        activeBranches,
+        totalUsers,
+        activeUsers,
+        totalMembers,
+        activeMembers,
+        totalPackages,
+        activePackages,
+        totalSessions,
+        completedSessions,
+        totalRevenue: Number(totalRevenue._sum.totalAmount || 0),
+        monthlyRevenue: Number(monthlyRevenue._sum.totalAmount || 0),
       };
+    } catch (error) {
+      console.error('Error getting system stats:', error);
+      throw new Error('Gagal mengambil statistik sistem');
     }
-
-    const updatedBranch = await prisma.branch.update({
-      where: { id: branchId },
-      data: updateData
-    });
-
-    await logAudit({
-      userId: updatedBy,
-      action: AuditAction.UPDATE,
-      resource: 'Branch',
-      resourceId: branchId,
-      meta: {
-        changes: updateData
-      }
-    });
-
-    return updatedBranch;
   }
 
-  // ============================================================
-  // ADMIN MANAGER - PACKAGE PRICING
-  // ============================================================
-
-  async updatePackagePricing(pricingId: string, updateData: any, updatedBy: string) {
-    const pricing = await prisma.packagePricing.findUnique({
-      where: { id: pricingId }
-    });
-
-    if (!pricing) {
-      throw {
-        status: 404,
-        code: 'PRICING_NOT_FOUND',
-        message: 'Harga paket tidak ditemukan'
+  // ── Get System Health ──────────────────────────────────────
+  async getSystemHealth() {
+    try {
+      const health = {
+        database: 'operational',
+        api: 'operational',
+        storage: 'operational',
+        authentication: 'operational',
       };
-    }
 
-    const updatedPricing = await prisma.packagePricing.update({
-      where: { id: pricingId },
-      data: updateData
-    });
-
-    await logAudit({
-      userId: updatedBy,
-      action: AuditAction.UPDATE,
-      resource: 'PackagePricing',
-      resourceId: pricingId,
-      meta: {
-        changes: updateData,
-        previousPrice: pricing.price
+      // Test database connection
+      try {
+        await prisma.$queryRaw`SELECT 1`;
+      } catch (error) {
+        health.database = 'error';
       }
-    });
 
-    return updatedPricing;
+      return health;
+    } catch (error) {
+      console.error('Error checking system health:', error);
+      throw new Error('Gagal memeriksa kesehatan sistem');
+    }
   }
 
-  async getAllPackagePricing() {
-    const pricing = await prisma.packagePricing.findMany({
-      include: {
-        branch: {
-          select: {
-            name: true,
-            branchCode: true
-          }
-        }
-      },
-      orderBy: [
-        { branch: { name: 'asc' } },
-        { packageType: 'asc' },
-        { totalSessions: 'asc' }
-      ]
-    });
-
-    return pricing.map(item => ({
-      id: item.id,
-      branchName: item.branch.name,
-      branchCode: item.branch.branchCode,
-      packageType: item.packageType,
-      name: item.name,
-      totalSessions: item.totalSessions,
-      price: Number(item.price),
-      isActive: item.isActive,
-      createdAt: item.createdAt
-    }));
-  }
-
-  // ============================================================
-  // HELPER METHODS
-  // ============================================================
-
-  private async generateStaffCode(role: Role): Promise<string> {
-    const rolePrefix = {
-      [Role.ADMIN_LAYANAN]: 'AL',
-      [Role.DOCTOR]: 'DR',
-      [Role.NURSE]: 'NR'
-    }[role] || 'ST';
-
-    const date = new Date();
-    const dateStr = date.toISOString().slice(0, 10).replace(/-/g, '');
-    
-    let counter = 1;
-    let staffCode: string;
-    
-    do {
-      const counterStr = counter.toString().padStart(3, '0');
-      staffCode = `${rolePrefix}-${dateStr}-${counterStr}`;
-      
-      const existing = await prisma.user.findFirst({
-        where: { staffCode }
+  // ── Get Recent Activities ──────────────────────────────────
+  async getRecentActivities(limit: number = 20) {
+    try {
+      const activities = await prisma.auditLog.findMany({
+        take: limit,
+        orderBy: { createdAt: 'desc' },
+        include: {
+          user: {
+            include: {
+              profile: true,
+              branch: true,
+            },
+          },
+        },
       });
-      
-      if (!existing) break;
-      counter++;
-    } while (counter <= 999);
 
-    return staffCode;
-  }
-
-  private async generateStockRequestCode(branchCode: string): Promise<string> {
-    const date = new Date();
-    const year = date.getFullYear().toString().slice(-2);
-    const month = (date.getMonth() + 1).toString().padStart(2, '0');
-    
-    const prefix = `REQ-${branchCode}-${year}${month}`;
-    
-    const lastRequest = await prisma.stockRequest.findFirst({
-      where: {
-        requestCode: {
-          startsWith: prefix
-        }
-      },
-      orderBy: {
-        requestCode: 'desc'
-      }
-    });
-
-    let sequence = 1;
-    if (lastRequest) {
-      const lastSeq = parseInt(lastRequest.requestCode.split('-').pop() || '0');
-      sequence = lastSeq + 1;
+      return activities.map((activity: any) => ({
+        id: activity.id,
+        type: activity.action,
+        description: `${activity.action} ${activity.resource}${activity.resourceId ? ` (${activity.resourceId})` : ''}`,
+        timestamp: activity.createdAt,
+        user: activity.user.profile?.fullName || activity.user.email,
+        branch: activity.user.branch?.name,
+        meta: activity.meta,
+      }));
+    } catch (error) {
+      console.error('Error getting recent activities:', error);
+      throw new Error('Gagal mengambil aktivitas terbaru');
     }
-
-    return `${prefix}-${sequence.toString().padStart(4, '0')}`;
   }
+
+  // ── Get Branch Performance Comparison ──────────────────────
+  async getBranchPerformance() {
+    try {
+      const branches = await prisma.branch.findMany({
+        where: { isActive: true },
+        include: {
+          _count: {
+            select: {
+              users: true,
+              members: true,
+              memberPackages: true,
+              treatmentSessions: true,
+            },
+          },
+        },
+      });
+
+      const branchPerformance = await Promise.all(
+        branches.map(async (branch: any) => {
+          const revenue = await prisma.invoice.aggregate({
+            where: {
+              branchId: branch.id,
+              status: 'PAID',
+            },
+            _sum: { totalAmount: true },
+          });
+
+          const monthlyRevenue = await prisma.invoice.aggregate({
+            where: {
+              branchId: branch.id,
+              status: 'PAID',
+              paidAt: {
+                gte: new Date(new Date().getFullYear(), new Date().getMonth(), 1),
+              },
+            },
+            _sum: { totalAmount: true },
+          });
+
+          return {
+            branchId: branch.id,
+            branchCode: branch.branchCode,
+            branchName: branch.name,
+            totalUsers: branch._count.users,
+            totalMembers: branch._count.members,
+            totalPackages: branch._count.memberPackages,
+            totalSessions: branch._count.treatmentSessions,
+            totalRevenue: Number(revenue._sum.totalAmount || 0),
+            monthlyRevenue: Number(monthlyRevenue._sum.totalAmount || 0),
+          };
+        })
+      );
+
+      return branchPerformance;
+    } catch (error) {
+      console.error('Error getting branch performance:', error);
+      throw new Error('Gagal mengambil performa cabang');
+    }
+  }
+
+  // ── Get Audit Logs with Filters ────────────────────────────
+  async getAuditLogs(filters: {
+    page?: number;
+    limit?: number;
+    search?: string;
+    action?: string;
+    resource?: string;
+    userId?: string;
+    startDate?: string;
+    endDate?: string;
+  }) {
+    try {
+      const {
+        page = 1,
+        limit = 50,
+        search,
+        action,
+        resource,
+        userId,
+        startDate,
+        endDate,
+      } = filters;
+
+      const skip = (page - 1) * limit;
+
+      // Build where clause
+      const where: any = {};
+
+      if (search) {
+        where.OR = [
+          { resource: { contains: search, mode: 'insensitive' } },
+          { resourceId: { contains: search, mode: 'insensitive' } },
+        ];
+      }
+
+      if (action) {
+        where.action = action;
+      }
+
+      if (resource) {
+        where.resource = resource;
+      }
+
+      if (userId) {
+        where.userId = userId;
+      }
+
+      if (startDate || endDate) {
+        where.createdAt = {};
+        if (startDate) {
+          where.createdAt.gte = new Date(startDate);
+        }
+        if (endDate) {
+          where.createdAt.lte = new Date(endDate);
+        }
+      }
+
+      const [total, logs] = await Promise.all([
+        prisma.auditLog.count({ where }),
+        prisma.auditLog.findMany({
+          where,
+          skip,
+          take: limit,
+          orderBy: { createdAt: 'desc' },
+          include: {
+            user: {
+              include: {
+                profile: true,
+                branch: true,
+              },
+            },
+          },
+        }),
+      ]);
+
+      const formattedLogs = logs.map((log: any) => ({
+        id: log.id,
+        action: log.action,
+        resource: log.resource,
+        resourceId: log.resourceId,
+        meta: log.meta,
+        ipAddress: log.ipAddress,
+        userAgent: log.userAgent,
+        createdAt: log.createdAt,
+        user: {
+          id: log.user.id,
+          email: log.user.email,
+          fullName: log.user.profile?.fullName || log.user.email,
+          role: log.user.role,
+        },
+        branch: log.user.branch
+          ? {
+              id: log.user.branch.id,
+              name: log.user.branch.name,
+              branchCode: log.user.branch.branchCode,
+            }
+          : null,
+      }));
+
+      return {
+        logs: formattedLogs,
+        pagination: {
+          page,
+          limit,
+          total,
+          totalPages: Math.ceil(total / limit),
+        },
+      };
+    } catch (error) {
+      console.error('Error getting audit logs:', error);
+      throw new Error('Gagal mengambil audit logs');
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  // PACKAGE PRICING MANAGEMENT
+  // ══════════════════════════════════════════════════════════════
+
+  // ── Get All Package Pricing with Filters ───────────────────
+  async getAllPackagePricing(filters: {
+    branchId?: string;
+    packageType?: string;
+    isActive?: boolean;
+    search?: string;
+    page?: number;
+    limit?: number;
+  }) {
+    try {
+      const {
+        branchId,
+        packageType,
+        isActive,
+        search,
+        page = 1,
+        limit = 20,
+      } = filters;
+
+      const skip = (page - 1) * limit;
+
+      // Build where clause
+      const where: any = {};
+
+      if (branchId) {
+        where.branchId = branchId;
+      }
+
+      if (packageType) {
+        where.packageType = packageType;
+      }
+
+      if (isActive !== undefined) {
+        where.isActive = isActive;
+      }
+
+      if (search) {
+        where.OR = [
+          { name: { contains: search, mode: 'insensitive' } },
+          { productCode: { contains: search, mode: 'insensitive' } },
+        ];
+      }
+
+      const [total, pricings] = await Promise.all([
+        prisma.packagePricing.count({ where }),
+        prisma.packagePricing.findMany({
+          where,
+          skip,
+          take: limit,
+          orderBy: { createdAt: 'desc' },
+          include: {
+            branch: {
+              select: {
+                id: true,
+                name: true,
+                branchCode: true,
+              },
+            },
+            _count: {
+              select: {
+                memberPackages: true,
+              },
+            },
+          },
+        }),
+      ]);
+
+      const formattedPricings = pricings.map((pricing: any) => ({
+        id: pricing.id,
+        branchId: pricing.branchId,
+        branch: pricing.branch,
+        packageType: pricing.packageType,
+        productCode: pricing.productCode,
+        name: pricing.name,
+        totalSessions: pricing.totalSessions,
+        price: Number(pricing.price),
+        isActive: pricing.isActive,
+        usageCount: pricing._count.memberPackages,
+        createdAt: pricing.createdAt,
+        updatedAt: pricing.updatedAt,
+      }));
+
+      return {
+        pricings: formattedPricings,
+        pagination: {
+          page,
+          limit,
+          total,
+          totalPages: Math.ceil(total / limit),
+        },
+      };
+    } catch (error) {
+      console.error('Error getting package pricing:', error);
+      throw new Error('Gagal mengambil daftar harga paket');
+    }
+  }
+
+  // ── Get Single Package Pricing ─────────────────────────────
+  async getPackagePricing(pricingId: string) {
+    try {
+      const pricing = await prisma.packagePricing.findUnique({
+        where: { id: pricingId },
+        include: {
+          branch: {
+            select: {
+              id: true,
+              name: true,
+              branchCode: true,
+            },
+          },
+          _count: {
+            select: {
+              memberPackages: true,
+            },
+          },
+        },
+      });
+
+      if (!pricing) {
+        throw errors.notFound('Harga paket tidak ditemukan');
+      }
+
+      return {
+        id: pricing.id,
+        branchId: pricing.branchId,
+        branch: pricing.branch,
+        packageType: pricing.packageType,
+        productCode: pricing.productCode,
+        name: pricing.name,
+        totalSessions: pricing.totalSessions,
+        price: Number(pricing.price),
+        isActive: pricing.isActive,
+        usageCount: pricing._count.memberPackages,
+        createdAt: pricing.createdAt,
+        updatedAt: pricing.updatedAt,
+      };
+    } catch (error) {
+      if (error instanceof Error && error.message.includes('tidak ditemukan')) {
+        throw error;
+      }
+      console.error('Error getting package pricing:', error);
+      throw new Error('Gagal mengambil detail harga paket');
+    }
+  }
+
+  // ── Create Package Pricing ─────────────────────────────────
+  async createPackagePricing(data: {
+    branchId: string;
+    packageType: string;
+    productCode?: string;
+    name: string;
+    totalSessions: number;
+    price: number;
+  }) {
+    try {
+      // Check if branch exists
+      const branch = await prisma.branch.findUnique({
+        where: { id: data.branchId },
+      });
+
+      if (!branch) {
+        throw errors.notFound('Cabang tidak ditemukan');
+      }
+
+      // Check for duplicate
+      const existing = await prisma.packagePricing.findFirst({
+        where: {
+          branchId: data.branchId,
+          packageType: data.packageType as any,
+          totalSessions: data.totalSessions,
+        },
+      });
+
+      if (existing) {
+        throw errors.conflict(
+          'PACKAGE_PRICING_EXISTS',
+          'Harga paket dengan tipe dan jumlah sesi yang sama sudah ada untuk cabang ini'
+        );
+      }
+
+      const pricing = await prisma.packagePricing.create({
+        data: {
+          branchId: data.branchId,
+          packageType: data.packageType as any,
+          productCode: data.productCode,
+          name: data.name,
+          totalSessions: data.totalSessions,
+          price: data.price,
+        },
+        include: {
+          branch: {
+            select: {
+              id: true,
+              name: true,
+              branchCode: true,
+            },
+          },
+        },
+      });
+
+      return {
+        id: pricing.id,
+        branchId: pricing.branchId,
+        branch: pricing.branch,
+        packageType: pricing.packageType,
+        productCode: pricing.productCode,
+        name: pricing.name,
+        totalSessions: pricing.totalSessions,
+        price: Number(pricing.price),
+        isActive: pricing.isActive,
+        createdAt: pricing.createdAt,
+        updatedAt: pricing.updatedAt,
+      };
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        (error.message.includes('tidak ditemukan') ||
+          error.message.includes('sudah ada'))
+      ) {
+        throw error;
+      }
+      console.error('Error creating package pricing:', error);
+      throw new Error('Gagal membuat harga paket');
+    }
+  }
+
+  // ── Update Package Pricing ─────────────────────────────────
+  async updatePackagePricing(
+    pricingId: string,
+    data: {
+      name?: string;
+      productCode?: string;
+      price?: number;
+      isActive?: boolean;
+    }
+  ) {
+    try {
+      const existing = await prisma.packagePricing.findUnique({
+        where: { id: pricingId },
+      });
+
+      if (!existing) {
+        throw errors.notFound('Harga paket tidak ditemukan');
+      }
+
+      const pricing = await prisma.packagePricing.update({
+        where: { id: pricingId },
+        data: {
+          ...(data.name && { name: data.name }),
+          ...(data.productCode !== undefined && { productCode: data.productCode }),
+          ...(data.price !== undefined && { price: data.price }),
+          ...(data.isActive !== undefined && { isActive: data.isActive }),
+        },
+        include: {
+          branch: {
+            select: {
+              id: true,
+              name: true,
+              branchCode: true,
+            },
+          },
+          _count: {
+            select: {
+              memberPackages: true,
+            },
+          },
+        },
+      });
+
+      return {
+        id: pricing.id,
+        branchId: pricing.branchId,
+        branch: pricing.branch,
+        packageType: pricing.packageType,
+        productCode: pricing.productCode,
+        name: pricing.name,
+        totalSessions: pricing.totalSessions,
+        price: Number(pricing.price),
+        isActive: pricing.isActive,
+        usageCount: pricing._count.memberPackages,
+        createdAt: pricing.createdAt,
+        updatedAt: pricing.updatedAt,
+      };
+    } catch (error) {
+      if (error instanceof Error && error.message.includes('tidak ditemukan')) {
+        throw error;
+      }
+      console.error('Error updating package pricing:', error);
+      throw new Error('Gagal mengupdate harga paket');
+    }
+  }
+
+  // ── Delete Package Pricing ─────────────────────────────────
+  async deletePackagePricing(pricingId: string) {
+    try {
+      const existing = await prisma.packagePricing.findUnique({
+        where: { id: pricingId },
+        include: {
+          _count: {
+            select: {
+              memberPackages: true,
+            },
+          },
+        },
+      });
+
+      if (!existing) {
+        throw errors.notFound('Harga paket tidak ditemukan');
+      }
+
+      if (existing._count.memberPackages > 0) {
+        throw errors.conflict(
+          'PACKAGE_PRICING_IN_USE',
+          'Tidak dapat menghapus harga paket yang sudah digunakan oleh member'
+        );
+      }
+
+      await prisma.packagePricing.delete({
+        where: { id: pricingId },
+      });
+
+      return { message: 'Harga paket berhasil dihapus' };
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        (error.message.includes('tidak ditemukan') ||
+          error.message.includes('sudah digunakan'))
+      ) {
+        throw error;
+      }
+      console.error('Error deleting package pricing:', error);
+      throw new Error('Gagal menghapus harga paket');
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  // USER MANAGEMENT (ADMIN MANAGER)
+  // ══════════════════════════════════════════════════════════════
+
+  // ── Create Admin Manager ───────────────────────────────────
+  async createAdminManager(data: {
+    email: string;
+    password: string;
+    fullName: string;
+    phone: string;
+    branchIds: string[];
+  }) {
+    try {
+      const bcrypt = require('bcryptjs');
+
+      // Check if email already exists
+      const existingUser = await prisma.user.findUnique({
+        where: { email: data.email },
+      });
+
+      if (existingUser) {
+        throw errors.conflict('EMAIL_EXISTS', 'Email sudah terdaftar');
+      }
+
+      // Verify all branches exist
+      const branches = await prisma.branch.findMany({
+        where: {
+          id: { in: data.branchIds },
+        },
+      });
+
+      if (branches.length !== data.branchIds.length) {
+        throw errors.notFound('Satu atau lebih cabang tidak ditemukan');
+      }
+
+      // Hash password
+      const hashedPassword = await bcrypt.hash(data.password, 10);
+
+      // Create user with profile and branch assignments
+      const user = await prisma.user.create({
+        data: {
+          email: data.email,
+          password: hashedPassword,
+          role: 'ADMIN_MANAGER',
+          isActive: true,
+          profile: {
+            create: {
+              fullName: data.fullName,
+              phone: data.phone,
+            },
+          },
+          managedBranches: {
+            create: data.branchIds.map((branchId) => ({
+              branchId,
+            })),
+          },
+        },
+        include: {
+          profile: true,
+          managedBranches: {
+            include: {
+              branch: {
+                select: {
+                  id: true,
+                  name: true,
+                  branchCode: true,
+                },
+              },
+            },
+          },
+        },
+      });
+
+      return {
+        id: user.id,
+        email: user.email,
+        role: user.role,
+        isActive: user.isActive,
+        profile: user.profile,
+        managedBranches: user.managedBranches.map((mb: any) => mb.branch),
+        createdAt: user.createdAt,
+      };
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        (error.message.includes('sudah terdaftar') ||
+          error.message.includes('tidak ditemukan'))
+      ) {
+        throw error;
+      }
+      console.error('Error creating admin manager:', error);
+      throw new Error('Gagal membuat admin manager');
+    }
+  }
+
+  // ── Get All Users with Filters ─────────────────────────────
+  async getAllUsers(filters: {
+    role?: string;
+    branchId?: string;
+    isActive?: boolean;
+    search?: string;
+    page?: number;
+    limit?: number;
+  }) {
+    try {
+      const {
+        role,
+        branchId,
+        isActive,
+        search,
+        page = 1,
+        limit = 20,
+      } = filters;
+
+      const skip = (page - 1) * limit;
+
+      // Build where clause
+      const where: any = {
+        role: { not: 'MEMBER' }, // Exclude members
+      };
+
+      if (role) {
+        where.role = role;
+      }
+
+      if (branchId) {
+        where.OR = [
+          { branchId },
+          {
+            managedBranches: {
+              some: {
+                branchId,
+              },
+            },
+          },
+        ];
+      }
+
+      if (isActive !== undefined) {
+        where.isActive = isActive;
+      }
+
+      if (search) {
+        where.OR = [
+          { email: { contains: search, mode: 'insensitive' } },
+          {
+            profile: {
+              fullName: { contains: search, mode: 'insensitive' },
+            },
+          },
+        ];
+      }
+
+      const [total, users] = await Promise.all([
+        prisma.user.count({ where }),
+        prisma.user.findMany({
+          where,
+          skip,
+          take: limit,
+          orderBy: { createdAt: 'desc' },
+          include: {
+            profile: true,
+            branch: {
+              select: {
+                id: true,
+                name: true,
+                branchCode: true,
+              },
+            },
+            managedBranches: {
+              include: {
+                branch: {
+                  select: {
+                    id: true,
+                    name: true,
+                    branchCode: true,
+                  },
+                },
+              },
+            },
+          },
+        }),
+      ]);
+
+      const formattedUsers = users.map((user: any) => ({
+        id: user.id,
+        email: user.email,
+        role: user.role,
+        isActive: user.isActive,
+        profile: user.profile,
+        branch: user.branch,
+        managedBranches: user.managedBranches.map((mb: any) => mb.branch),
+        createdAt: user.createdAt,
+        updatedAt: user.updatedAt,
+      }));
+
+      return {
+        users: formattedUsers,
+        pagination: {
+          page,
+          limit,
+          total,
+          totalPages: Math.ceil(total / limit),
+        },
+      };
+    } catch (error) {
+      console.error('Error getting users:', error);
+      throw new Error('Gagal mengambil daftar user');
+    }
+  }
+
 }

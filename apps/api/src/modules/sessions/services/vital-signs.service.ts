@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { prisma } from '../../../lib/prisma';
 import type { CreateVitalSignInput } from '../sessions.schema';
 

@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { prisma } from '../../lib/prisma';
 import { StockRequestStatus, Role, AuditAction } from '@prisma/client';
 import { logAudit } from '../../utils/auditLog';

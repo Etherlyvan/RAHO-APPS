@@ -1,112 +1,115 @@
 import { Router } from 'express';
-import { AdminController } from './admin.controller';
+import {
+  getSystemStats,
+  getSystemHealth,
+  getRecentActivities,
+  getBranchPerformance,
+  getAuditLogs,
+  getAllPackagePricing,
+  getPackagePricing,
+  createPackagePricing,
+  updatePackagePricing,
+  deletePackagePricing,
+  createAdminManager,
+  getAllUsers,
+} from './admin.controller';
 import { authenticate } from '../../middleware/authenticate';
 import { authorize } from '../../middleware/authorize';
-import { Role } from '@prisma/client';
+import { validate } from '../../middleware/validate';
+import {
+  createPackagePricingSchema,
+  updatePackagePricingSchema,
+  createAdminManagerSchema,
+} from './admin.schema';
 
 const router = Router();
-const adminController = new AdminController();
 
 // Apply authentication to all admin routes
 router.use(authenticate);
 
 // ============================================================
-// ADMIN CABANG ROUTES - Requires ADMIN_CABANG role
+// SUPER ADMIN ROUTES
 // ============================================================
 
-// KPI & Dashboard
-router.get('/branch/kpi', 
-  authorize([Role.ADMIN_CABANG]), 
-  adminController.getBranchKPI.bind(adminController)
+// ── System Management ──────────────────────────────────────
+
+// System Statistics
+router.get('/system/stats', 
+  authorize(['SUPER_ADMIN']), 
+  getSystemStats
 );
 
-router.get('/branch/stock-status', 
-  authorize([Role.ADMIN_CABANG]), 
-  adminController.getBranchStockStatus.bind(adminController)
+// System Health
+router.get('/system/health', 
+  authorize(['SUPER_ADMIN']), 
+  getSystemHealth
 );
 
-router.get('/branch/pending-packages', 
-  authorize([Role.ADMIN_CABANG]), 
-  adminController.getPendingPackages.bind(adminController)
+// Recent Activities
+router.get('/system/activities', 
+  authorize(['SUPER_ADMIN']), 
+  getRecentActivities
 );
 
-// User Management
-router.post('/branch/users', 
-  authorize([Role.ADMIN_CABANG]), 
-  adminController.createBranchUser.bind(adminController)
+// Branch Performance
+router.get('/system/performance', 
+  authorize(['SUPER_ADMIN']), 
+  getBranchPerformance
 );
 
-router.get('/branch/users', 
-  authorize([Role.ADMIN_CABANG]), 
-  adminController.getBranchUsers.bind(adminController)
+// Audit Logs
+router.get('/system/audit-logs', 
+  authorize(['SUPER_ADMIN']), 
+  getAuditLogs
 );
 
-router.patch('/branch/users/:userId/deactivate', 
-  authorize([Role.ADMIN_CABANG]), 
-  adminController.deactivateUser.bind(adminController)
+// ── Package Pricing Management ─────────────────────────────
+
+// Get all package pricing (with filters)
+router.get('/package-pricing',
+  authorize(['SUPER_ADMIN']),
+  getAllPackagePricing
 );
 
-// Stock Requests
-router.post('/branch/stock-requests', 
-  authorize([Role.ADMIN_CABANG]), 
-  adminController.createStockRequest.bind(adminController)
+// Get single package pricing
+router.get('/package-pricing/:pricingId',
+  authorize(['SUPER_ADMIN']),
+  getPackagePricing
 );
 
-router.get('/branch/stock-requests', 
-  authorize([Role.ADMIN_CABANG]), 
-  adminController.getBranchStockRequests.bind(adminController)
+// Create package pricing
+router.post('/package-pricing',
+  authorize(['SUPER_ADMIN']),
+  validate(createPackagePricingSchema),
+  createPackagePricing
 );
 
-// ============================================================
-// ADMIN MANAGER ROUTES - Requires ADMIN_MANAGER role
-// ============================================================
-
-// Multi-Branch KPI
-router.get('/manager/kpi', 
-  authorize([Role.ADMIN_MANAGER]), 
-  adminController.getMultiBranchKPI.bind(adminController)
+// Update package pricing
+router.patch('/package-pricing/:pricingId',
+  authorize(['SUPER_ADMIN']),
+  validate(updatePackagePricingSchema),
+  updatePackagePricing
 );
 
-router.get('/manager/sessions-per-branch', 
-  authorize([Role.ADMIN_MANAGER]), 
-  adminController.getSessionsPerBranch.bind(adminController)
+// Delete package pricing
+router.delete('/package-pricing/:pricingId',
+  authorize(['SUPER_ADMIN']),
+  deletePackagePricing
 );
 
-// Branch Management
-router.post('/manager/branches', 
-  authorize([Role.ADMIN_MANAGER]), 
-  adminController.createBranch.bind(adminController)
+// ── User Management ────────────────────────────────────────
+
+// Create Admin Manager
+router.post('/users/admin-manager',
+  authorize(['SUPER_ADMIN']),
+  validate(createAdminManagerSchema),
+  createAdminManager
 );
 
-router.get('/manager/branches', 
-  authorize([Role.ADMIN_MANAGER]), 
-  adminController.getAllBranches.bind(adminController)
-);
-
-router.patch('/manager/branches/:branchId', 
-  authorize([Role.ADMIN_MANAGER]), 
-  adminController.updateBranch.bind(adminController)
-);
-
-// Package Pricing Management
-router.get('/manager/package-pricing', 
-  authorize([Role.ADMIN_MANAGER]), 
-  adminController.getAllPackagePricing.bind(adminController)
-);
-
-router.patch('/manager/package-pricing/:pricingId', 
-  authorize([Role.ADMIN_MANAGER]), 
-  adminController.updatePackagePricing.bind(adminController)
-);
-
-// ============================================================
-// SHARED ROUTES - Both ADMIN_CABANG and ADMIN_MANAGER can access
-// ============================================================
-
-// View all branches (read-only for ADMIN_CABANG)
-router.get('/branches', 
-  authorize([Role.ADMIN_CABANG, Role.ADMIN_MANAGER]), 
-  adminController.getAllBranches.bind(adminController)
+// Get all users (with filters by role, branch, etc.)
+router.get('/users',
+  authorize(['SUPER_ADMIN']),
+  getAllUsers
 );
 
 export { router as adminRoutes };
